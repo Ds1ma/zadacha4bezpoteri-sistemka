@@ -1,0 +1,130 @@
+import java.util.concurrent.atomic.AtomicInteger;
+public class Main {
+    public static void main(String[] args) throws InterruptedException {
+        // Закомментированные примеры
+//        RandomRunExample.example();
+//        SeriesRunExample.example();
+        // Запуск примера, демонстрирующего совместное использование ресурсов и интерференцию потоков
+        (new InterferenceExample()).example();
+    }
+}
+/**
+ * Пример совместного использования ресурсов
+ */
+// Пример демонстрации несинхронизированного запуска потоков
+class RandomRunExample extends Thread {
+    public void run(){
+        // Выводит имя текущего выполняющегося потока (например, Thread-0, Thread-1 и т.д.)
+        System.out.println(Thread.currentThread().getName());
+    }
+    public static void example(){
+        // Создает и запускает 10 независимых потоков.
+
+        for (int i = 0; i < 10; i++) {
+            Thread thread = new RandomRunExample();
+            thread.start();
+        }
+    }
+}
+// Пример демонстрации строго последовательного запуска потоков
+class SeriesRunExample extends Thread {
+    // переменная указывает, какой поток должен выполняться сейчас.
+    private static int currentMax = 1;
+    private int mainId; // Уникальный идентификатор данного потока
+    private final Object waitObject; // Объект, используемый для синхронизации потоков
+    private SeriesRunExample(int mainId, Object waitObject) {
+        this.mainId = mainId;
+        this.waitObject = waitObject;
+    }
+    public static void example(){
+        Object waitObject = new Object();
+        // Создаем и запускаем потоки с идентификаторами от 1 до 9
+        for (int i = currentMax; i < 10; ++i) {
+            Thread thread = new SeriesRunExample(i, waitObject);
+            thread.start();
+        }
+    }
+    public void run() {
+        System.out.println("Стартовал поток " + mainId);
+        // Потоки запускаются планировщиком в произвольном порядке
+        synchronized (waitObject){
+            // Если текущий идентификатор потока больше ожидаемого, поток переходит в режим ожидания
+            while (mainId > currentMax){
+                try {
+                    // wait() приостанавливает выполнение потока до вызова notify/notifyAll
+                    waitObject.wait();
+                    System.out.println("После wait'a " + mainId);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+            // Как только mainId == currentMax, поток выходит из цикла while и продолжает выполнение.
+            // Блоки кода ниже выполняются по порядку
+            currentMax++; // Увеличиваем ожидаемый идентификатор для следующего потока
+
+            System.out.println("Отработал поток " + mainId);
+            // notifyAll() пробуждает все ждущие потоки.
+            waitObject.notifyAll();
+        }
+    }
+}
+// Класс счетчик
+class StateObject {
+    private int i; // Значение счетчика
+    // Ключевое слово synchronized гарантирует, что только один поток может выполнять этот метод
+    synchronized void increment(){
+        i++;
+    }
+    // Метод получения текущего значения счетчика.
+    // Чтение происходит после завершения всех потоков
+    public int getI(){
+        return i;
+    }
+}
+class InterferenceExample {
+    // Лимит операций инкремента (100 миллионов)
+    private static final int HUNDRED_MILLION = 100000000;
+    // Потокобезопасный счетчик для контроля общего количества итераций всех потоков
+    private AtomicInteger counter = new AtomicInteger();
+    // Объект, содержащий состояние, которое будет обновляться из разных потоков
+    private StateObject stateObject = new StateObject();
+    // Метод условия остановки: атомарно увеличивает счетчик и проверяет, не превышен ли лимит.
+    // Условие остановки вернет true ровно один раз при достижении HUNDRED_MILLION.
+    boolean stop() {
+        return counter.incrementAndGet() > HUNDRED_MILLION;
+    }
+    public void example() throws InterruptedException {
+        // Создаем два рабочих потока, передавая им общие экземпляры checker и stateObject
+        InterferenceThread thread1 = new InterferenceThread(this, stateObject);
+        InterferenceThread thread2 = new InterferenceThread(this, stateObject);
+        // Запускаем оба потока параллельно
+        thread1.start();
+        thread2.start();
+        // Основной поток ожидает завершения thread1, thread2
+        thread1.join();
+        thread2.join();
+        // Выводим ожидаемое количество инкрементов
+        System.out.println("Expected: " + HUNDRED_MILLION);
+        // Выводим фактический результат.
+        // Благодаря синхронизации в StateObject, количество успешных инкрементов точно совпадет с ожидаемым,
+        //  так как инкремент выполняется столько раз, сколько вызовов stop() вернули false.
+        System.out.println("Result: " + stateObject.getI());
+    }
+}
+// Класс потока, который выполняет инкремент общего состояния до момента остановки
+class InterferenceThread extends Thread {
+    private final InterferenceExample checker; // Ссылка на объект для проверки условия остановки
+    private final StateObject stateObject;     // Ссылка на объект, состояние которого нужно изменять
+    InterferenceThread(InterferenceExample checker, StateObject stateObject) {
+        this.checker = checker;
+        this.stateObject = stateObject;
+    }
+    public void run() {
+        // Цикл работает, пока checker.stop() возвращает false.
+        // Как только 100_000_001-й поток вызовет stop(), он вернет true, и цикл прервется.
+        while (!checker.stop()) {
+            // Потокобезопасное увеличение значения
+            stateObject.increment();
+        }
+    }
+}
